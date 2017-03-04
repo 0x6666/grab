@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -308,7 +309,7 @@ func (c *Client) do(req *Request) (*Response, error) {
 	}
 
 	// open destination for writing
-	f, err := os.OpenFile(resp.Filename, wflags, 0644)
+	f, err := os.OpenFile(resp.Filename, wflags, 0775)
 	if err != nil {
 		return resp, resp.close(err)
 	}
@@ -381,7 +382,31 @@ func computeFilename(req *Request, resp *Response) error {
 
 	// too bad if no filename found yet
 	if resp.Filename == "" {
-		return newGrabError(errNoFilename, "No filename could be determined")
+		resp.Filename = filepath.Join(dir, "index.html")
+	}
+
+	for {
+		fi, err := os.Stat(resp.Filename)
+		if !os.IsNotExist(err) && fi != nil {
+			ext := filepath.Ext(resp.Filename)
+			if ext == "" {
+				resp.Filename = resp.Filename + ".1"
+			} else {
+				ext = ext[1:]
+				if ext == "" {
+					resp.Filename = resp.Filename + "1"
+				} else {
+					n, err := strconv.Atoi(ext)
+					if err != nil {
+						resp.Filename = resp.Filename + ".1"
+					} else {
+						resp.Filename = resp.Filename[:len(resp.Filename)-len(ext)] + fmt.Sprintf("%v", n+1)
+					}
+				}
+			}
+		} else {
+			break
+		}
 	}
 
 	return nil
