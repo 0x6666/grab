@@ -1,10 +1,13 @@
 package grab
 
 import (
+	"fmt"
 	"mime"
 	"net/http"
+	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -50,6 +53,7 @@ func guessFilename(resp *http.Response) (string, error) {
 		} else {
 			break
 		}
+	}
 
 	return filename, nil
 }
