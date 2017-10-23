@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -238,6 +239,31 @@ func (c *Response) readResponse(resp *http.Response) error {
 
 		// Request.Filename must be empty or a directory
 		c.Filename = filepath.Join(c.Request.Filename, filename)
+
+		for {
+			fi, err := os.Stat(c.Filename)
+			if !os.IsNotExist(err) && fi != nil {
+				ext := filepath.Ext(c.Filename)
+				if ext == "" {
+					c.Filename = c.Filename + ".1"
+				} else {
+					ext = ext[1:]
+					if ext == "" {
+						c.Filename = c.Filename + "1"
+					} else {
+						n, err := strconv.Atoi(ext)
+						if err != nil {
+							c.Filename = c.Filename + ".1"
+						} else {
+							c.Filename = c.Filename[:len(c.Filename)-len(ext)] + fmt.Sprintf("%v", n+1)
+						}
+					}
+				}
+			} else {
+				break
+			}
+		}
+
 		if err := c.setFileInfo(); err != nil {
 			return err
 		}
