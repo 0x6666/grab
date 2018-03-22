@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"math/rand"
@@ -15,41 +16,6 @@ import (
 	"testing"
 	"time"
 )
-
-// testComplete validates that a completed Response has all the desired fields.
-func testComplete(t *testing.T, resp *Response) {
-	<-resp.Done
-	if !resp.IsComplete() {
-		t.Errorf("Response.IsComplete returned false")
-	}
-
-	if resp.Start.IsZero() {
-		t.Errorf("Response.Start is zero")
-	}
-
-	if resp.End.IsZero() {
-		t.Error("Response.End is zero")
-	}
-
-	if eta := resp.ETA(); eta != resp.End {
-		t.Errorf("Response.ETA is not equal to Response.End: %v", eta)
-	}
-
-	// the following fields should only be set if no error occurred
-	if resp.Err() == nil {
-		if resp.Filename == "" {
-			t.Errorf("Response.Filename is empty")
-		}
-
-		if resp.Size == 0 {
-			t.Error("Response.Size is zero")
-		}
-
-		if p := resp.Progress(); p != 1.00 {
-			t.Errorf("Response.Progress returned %v (%v/%v bytes), expected 1", p, resp.BytesComplete(), resp.Size)
-		}
-	}
-}
 
 // TestFilenameResolutions tests that the destination filename for Requests can
 // be determined correctly, using an explicitly requested path,
@@ -74,7 +40,7 @@ func TestFilenameResolution(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	defer os.Remove(".test")
+	defer os.RemoveAll(".test")
 
 	for _, tc := range testCases {
 		t.Run(tc.Name, func(t *testing.T) {
@@ -103,7 +69,7 @@ func TestFilenameResolution(t *testing.T) {
 // TestChecksums checks that checksum validation behaves as expected for valid
 // and corrupted downloads.
 func TestChecksums(t *testing.T) {
-	testCases := []struct {
+	tests := []struct {
 		size  int
 		hash  hash.Hash
 		sum   string
@@ -135,28 +101,28 @@ func TestChecksums(t *testing.T) {
 		{1048576, sha512.New(), "ac1d097c4ea6f6ad7ba640275b9ac290e4828cd760a0ebf76d555463a4f505f95df4f611629539a2dd1848e7c1304633baa1826462b3c87521c0c6e3469b67af", false},
 	}
 
-	for _, tc := range testCases {
+	for _, test := range tests {
 		comparison := "Match"
-		if !tc.match {
+		if !test.match {
 			comparison = "Mismatch"
 		}
 
-		t.Run(fmt.Sprintf("%s %s", comparison, tc.sum[:8]), func(t *testing.T) {
-			filename := fmt.Sprintf(".testChecksum-%s-%s", comparison, tc.sum[:8])
+		t.Run(fmt.Sprintf("With%s%s", comparison, test.sum[:8]), func(t *testing.T) {
+			filename := fmt.Sprintf(".testChecksum-%s-%s", comparison, test.sum[:8])
 			defer os.Remove(filename)
 
-			b, _ := hex.DecodeString(tc.sum)
-			req, _ := NewRequest(filename, ts.URL+fmt.Sprintf("?size=%d", tc.size))
-			req.SetChecksum(tc.hash, b, true)
+			b, _ := hex.DecodeString(test.sum)
+			req, _ := NewRequest(filename, ts.URL+fmt.Sprintf("?size=%d", test.size))
+			req.SetChecksum(test.hash, b, true)
 
 			resp := DefaultClient.Do(req)
 			if err := resp.Err(); err != nil {
 				if err != ErrBadChecksum {
 					panic(err)
-				} else if tc.match {
+				} else if test.match {
 					t.Errorf("error: %v", err)
 				}
-			} else if !tc.match {
+			} else if !test.match {
 				t.Errorf("expected: %v, got: %v", ErrBadChecksum, err)
 			}
 
@@ -221,12 +187,11 @@ func TestAutoResume(t *testing.T) {
 
 	for i := 0; i < segs; i++ {
 		segsize := (i + 1) * (size / segs)
-		t.Run(fmt.Sprintf("Range %v: up to %v bytes", i+1, segsize), func(t *testing.T) {
+		t.Run(fmt.Sprintf("With%vBytes", segsize), func(t *testing.T) {
 			req, _ := NewRequest(filename, ts.URL+fmt.Sprintf("?size=%d", segsize))
 			if i == segs-1 {
 				req.SetChecksum(sha256.New(), sum, false)
 			}
-
 			resp := DefaultClient.Do(req)
 			if err := resp.Err(); err != nil {
 				t.Errorf("error: %v", err)
@@ -239,7 +204,7 @@ func TestAutoResume(t *testing.T) {
 		})
 	}
 
-	t.Run("Failure", func(t *testing.T) {
+	t.Run("WithFailure", func(t *testing.T) {
 		// request smaller segment
 		req, _ := NewRequest(filename, ts.URL+fmt.Sprintf("?size=%d", size-1))
 		resp := DefaultClient.Do(req)
@@ -248,21 +213,31 @@ func TestAutoResume(t *testing.T) {
 		}
 	})
 
-	t.Run("No resume", func(t *testing.T) {
+	t.Run("WithNoResume", func(t *testing.T) {
 		req, _ := NewRequest(filename, ts.URL+fmt.Sprintf("?size=%d", size+1))
 		req.NoResume = true
 		resp := DefaultClient.Do(req)
 		if err := resp.Err(); err != nil {
 			panic(err)
 		}
-
 		if resp.DidResume == true {
 			t.Errorf("expected Response.DidResume to be false")
 		}
-
 		testComplete(t, resp)
 	})
 
+	t.Run("WithNoResumeAndTruncate", func(t *testing.T) {
+		req, _ := NewRequest(filename, ts.URL+fmt.Sprintf("?size=%d", size-1))
+		req.NoResume = true
+		resp := DefaultClient.Do(req)
+		if err := resp.Err(); err != nil {
+			t.Errorf("error in response: %v", err)
+		}
+		if resp.DidResume == true {
+			t.Errorf("expected Response.DidResume to be false")
+		}
+		testComplete(t, resp)
+	})
 	// TODO: test when existing file is corrupted
 }
 
@@ -426,4 +401,67 @@ func TestRemoteTime(t *testing.T) {
 	if fi.ModTime().Unix() != lastmod {
 		t.Errorf("expected %v, got %v", time.Unix(lastmod, 0), fi.ModTime())
 	}
+}
+
+func TestResponseCode(t *testing.T) {
+	filename := "./.testResponseCode"
+
+	t.Run("With404", func(t *testing.T) {
+		defer os.Remove(filename)
+		req, _ := NewRequest(filename, ts.URL+"?status=404")
+		resp := DefaultClient.Do(req)
+		if err := resp.Err(); err != ErrBadStatusCode {
+			t.Errorf("expected error '%v', got '%v'", ErrBadStatusCode, err)
+		}
+	})
+
+	t.Run("WithIgnoreNon2XX", func(t *testing.T) {
+		defer os.Remove(filename)
+		req, _ := NewRequest(filename, ts.URL+"?status=404")
+		req.IgnoreBadStatusCodes = true
+		resp := DefaultClient.Do(req)
+		if err := resp.Err(); err != nil {
+			t.Errorf("expected nil, got '%v'", err)
+		}
+	})
+}
+
+func TestBeforeCopyHook(t *testing.T) {
+	filename := "./.testBeforeCopy"
+	t.Run("Noop", func(t *testing.T) {
+		defer os.RemoveAll(filename)
+		req, _ := NewRequest(filename, ts.URL)
+		req.BeforeCopy = func(resp *Response) error {
+			if resp.IsComplete() {
+				t.Errorf("Response object passed to BeforeCopy hook has already been closed")
+			}
+			return nil
+		}
+		resp := DefaultClient.Do(req)
+		if err := resp.Err(); err != nil {
+			t.Errorf("unexpected error using BeforeCopy hook: %v", err)
+		}
+		testComplete(t, resp)
+	})
+
+	t.Run("WithError", func(t *testing.T) {
+		defer os.RemoveAll(filename)
+		testError := errors.New("test")
+		req, _ := NewRequest(filename, ts.URL)
+		req.BeforeCopy = func(resp *Response) error {
+			if resp.IsComplete() {
+				t.Errorf("Response object passed to BeforeCopy hook has already been closed")
+			}
+			return testError
+		}
+		resp := DefaultClient.Do(req)
+		if err := resp.Err(); err != testError {
+			t.Errorf("expected error '%v', got '%v'", testError, err)
+		}
+		if resp.BytesComplete() != 0 {
+			t.Errorf("expected 0 bytes completed for cancelled BeforeCopy hook, got %d",
+				resp.BytesComplete())
+		}
+		testComplete(t, resp)
+	})
 }

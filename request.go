@@ -7,6 +7,11 @@ import (
 	"net/url"
 )
 
+// A Hook is a user provided function that can be called by grab at various
+// stages of a requests lifecycle. If a hook returns an error, the associated
+// request is canceled and the same error is returned on the Response object.
+type Hook func(*Response) error
+
 // A Request represents an HTTP file transfer request to be sent by a Client.
 type Request struct {
 	// Label is an arbitrary string which may used to label a Request with a
@@ -45,6 +50,11 @@ type Request struct {
 	// exist.
 	NoCreateDirectories bool
 
+	// IgnoreBadStatusCodes specifies that grab should accept any status code in
+	// the response from the remote server. Otherwise, grab expects the response
+	// status code to be within the 2XX range (after following redirects).
+	IgnoreBadStatusCodes bool
+
 	// IgnoreRemoteTime specifies that grab should not attempt to set the
 	// timestamp of the local file to match the remote file.
 	IgnoreRemoteTime bool
@@ -59,6 +69,11 @@ type Request struct {
 	// throughput but will use more memory and result in less frequent updates
 	// to the transfer progress statistics. Default: 32KB.
 	BufferSize int
+
+	// BeforeCopy is a user provided function that is called immediately before
+	// a request starts downloading. If BeforeCopy returns an error, the request
+	// is cancelled and the same error is returned on the Response object.
+	BeforeCopy Hook
 
 	// hash, checksum and deleteOnError - set via SetChecksum.
 	hash          hash.Hash
@@ -75,13 +90,10 @@ func NewRequest(dst, urlStr string) (*Request, error) {
 	if dst == "" {
 		dst = "."
 	}
-
-	// create http request
 	req, err := http.NewRequest("GET", urlStr, nil)
 	if err != nil {
 		return nil, err
 	}
-
 	return &Request{
 		HTTPRequest: req,
 		Filename:    dst,
@@ -91,8 +103,8 @@ func NewRequest(dst, urlStr string) (*Request, error) {
 // Context returns the request's context. To change the context, use
 // WithContext.
 //
-// The returned context is always non-nil; it defaults to the
-// background context.
+// The returned context is always non-nil; it defaults to the background
+// context.
 //
 // The context controls cancelation.
 func (r *Request) Context() context.Context {
@@ -109,12 +121,9 @@ func (r *Request) WithContext(ctx context.Context) *Request {
 	if ctx == nil {
 		panic("nil context")
 	}
-
 	r2 := new(Request)
 	*r2 = *r
 	r2.ctx = ctx
-
-	// propagate to HTTPRequest
 	r2.HTTPRequest = r2.HTTPRequest.WithContext(ctx)
 	return r2
 }
@@ -138,10 +147,6 @@ func (r *Request) URL() *url.URL {
 //
 // To disable checksum validation, call SetChecksum with a nil hash.
 func (r *Request) SetChecksum(h hash.Hash, sum []byte, deleteOnError bool) {
-	if h == nil {
-		h, sum, deleteOnError = nil, nil, false
-	}
-
 	r.hash = h
 	r.checksum = sum
 	r.deleteOnError = deleteOnError
